@@ -1,0 +1,348 @@
+package de.photofinals.app
+
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.abs
+
+class MainActivity : ComponentActivity() {
+    private lateinit var store: ProjectStore
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        store = ProjectStore(this)
+        setContent {
+            MaterialTheme {
+                PhotoFinalsApp(store)
+            }
+        }
+    }
+}
+
+data class ProjectState(
+    val all: List<String>,
+    val currentRound: List<String>,
+    val kept: List<String>,
+    val index: Int,
+    val round: Int,
+    val screen: String
+)
+
+class ProjectStore(private val activity: ComponentActivity) {
+    private val prefs = activity.getSharedPreferences("photo_finals", MODE_PRIVATE)
+
+    fun save(s: ProjectState) {
+        val o = JSONObject()
+        o.put("all", JSONArray(s.all))
+        o.put("currentRound", JSONArray(s.currentRound))
+        o.put("kept", JSONArray(s.kept))
+        o.put("index", s.index)
+        o.put("round", s.round)
+        o.put("screen", s.screen)
+        prefs.edit().putString("project", o.toString()).apply()
+    }
+
+    fun load(): ProjectState? {
+        val raw = prefs.getString("project", null) ?: return null
+        return runCatching {
+            val o = JSONObject(raw)
+            fun arr(name: String) = o.getJSONArray(name).let { a ->
+                List(a.length()) { i -> a.getString(i) }
+            }
+            ProjectState(
+                all = arr("all"),
+                currentRound = arr("currentRound"),
+                kept = arr("kept"),
+                index = o.getInt("index"),
+                round = o.getInt("round"),
+                screen = o.getString("screen")
+            )
+        }.getOrNull()
+    }
+
+    fun clear() = prefs.edit().remove("project").apply()
+}
+
+@Composable
+fun PhotoFinalsApp(store: ProjectStore) {
+    var state by remember {
+        mutableStateOf(
+            store.load() ?: ProjectState(
+                emptyList(), emptyList(), emptyList(), 0, 1, "home"
+            )
+        )
+    }
+
+    fun update(newState: ProjectState) {
+        state = newState
+        store.save(newState)
+    }
+
+    val picker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val strings = uris.map(Uri::toString)
+            update(ProjectState(strings, strings, emptyList(), 0, 1, "round"))
+        }
+    }
+
+    when (state.screen) {
+        "home" -> HomeScreen(
+            hasSaved = state.all.isNotEmpty(),
+            onNew = {
+                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onContinue = { update(state.copy(screen = if (state.index >= state.currentRound.size) "roundEnd" else "round")) }
+        )
+        "round" -> RoundScreen(
+            state = state,
+            onDecision = { keep ->
+                val kept = if (keep) state.kept + state.currentRound[state.index] else state.kept
+                val next = state.index + 1
+                update(state.copy(
+                    kept = kept,
+                    index = next,
+                    screen = if (next >= state.currentRound.size) "roundEnd" else "round"
+                ))
+            },
+            onUndo = {
+                if (state.index > 0) {
+                    val previousIndex = state.index - 1
+                    val previousUri = state.currentRound[previousIndex]
+                    update(state.copy(
+                        index = previousIndex,
+                        kept = state.kept.filterNot { it == previousUri }
+                    ))
+                }
+            }
+        )
+        "roundEnd" -> RoundEndScreen(
+            state = state,
+            onAnother = {
+                if (state.kept.isNotEmpty()) {
+                    update(ProjectState(
+                        all = state.all,
+                        currentRound = state.kept,
+                        kept = emptyList(),
+                        index = 0,
+                        round = state.round + 1,
+                        screen = "round"
+                    ))
+                }
+            },
+            onFinish = { update(state.copy(screen = "final")) }
+        )
+        "final" -> FinalScreen(
+            uris = state.kept,
+            round = state.round,
+            originalCount = state.all.size,
+            onBack = { update(state.copy(screen = "roundEnd")) },
+            onNew = {
+                store.clear()
+                state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
+            }
+        )
+    }
+}
+
+@Composable
+fun HomeScreen(hasSaved: Boolean, onNew: () -> Unit, onContinue: () -> Unit) {
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Photo Finals", style = MaterialTheme.typography.headlineLarge)
+            Spacer(Modifier.height(12.dp))
+            Text("Fotos Runde für Runde auf deine Favoriten reduzieren.")
+            Spacer(Modifier.height(32.dp))
+            Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
+                Text("Neue Auswahl")
+            }
+            if (hasSaved) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
+                    Text("Gespeicherte Auswahl fortsetzen")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RoundScreen(state: ProjectState, onDecision: (Boolean) -> Unit, onUndo: () -> Unit) {
+    val uri = state.currentRound[state.index]
+    var dragX by remember(uri) { mutableFloatStateOf(0f) }
+    var scale by remember(uri) { mutableFloatStateOf(1f) }
+    var offsetX by remember(uri) { mutableFloatStateOf(0f) }
+    var offsetY by remember(uri) { mutableFloatStateOf(0f) }
+
+    val transformState = rememberTransformableState { zoom, pan, _ ->
+        scale = (scale * zoom).coerceIn(1f, 5f)
+        if (scale > 1f) {
+            offsetX += pan.x
+            offsetY += pan.y
+        } else {
+            offsetX = 0f
+            offsetY = 0f
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Runde ${state.round}")
+            Text("${state.index + 1} / ${state.currentRound.size}")
+            TextButton(onClick = onUndo, enabled = state.index > 0) { Text("Undo") }
+        }
+
+        Box(
+            Modifier.weight(1f).fillMaxWidth().clipToBounds()
+                .pointerInput(uri, scale) {
+                    if (scale <= 1.02f) {
+                        detectDragGestures(
+                            onDragEnd = {
+                                if (abs(dragX) > 140f) onDecision(dragX > 0)
+                                dragX = 0f
+                            }
+                        ) { change, amount ->
+                            change.consume()
+                            dragX += amount.x
+                        }
+                    }
+                }
+                .transformable(transformState),
+            contentAlignment = Alignment.Center
+        ) {
+            AsyncImage(
+                model = uri,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().graphicsLayer {
+                    translationX = if (scale <= 1.02f) dragX else offsetX
+                    translationY = offsetY
+                    scaleX = scale
+                    scaleY = scale
+                    rotationZ = if (scale <= 1.02f) dragX / 80f else 0f
+                }
+            )
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = { onDecision(false) },
+                modifier = Modifier.weight(1f)
+            ) { Text("← Raus") }
+            Button(
+                onClick = { onDecision(true) },
+                modifier = Modifier.weight(1f)
+            ) { Text("Behalten →") }
+        }
+    }
+}
+
+@Composable
+fun RoundEndScreen(
+    state: ProjectState,
+    onAnother: () -> Unit,
+    onFinish: () -> Unit
+) {
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Runde ${state.round} abgeschlossen", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.height(18.dp))
+            Text("${state.currentRound.size} Fotos angesehen")
+            Text("${state.kept.size} Fotos ausgewählt", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(32.dp))
+            Button(
+                onClick = onFinish,
+                enabled = state.kept.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Auswahl abschließen") }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onAnother,
+                enabled = state.kept.size > 1,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Weitere Runde mit ${state.kept.size} Fotos") }
+        }
+    }
+}
+
+@Composable
+fun FinalScreen(
+    uris: List<String>,
+    round: Int,
+    originalCount: Int,
+    onBack: () -> Unit,
+    onNew: () -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Deine Auswahl", style = MaterialTheme.typography.headlineMedium)
+            Text("${uris.size} von $originalCount Fotos · nach $round Runde${if (round == 1) "" else "n"}")
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(120.dp),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(4.dp)
+        ) {
+            items(uris) { uri ->
+                AsyncImage(
+                    model = uri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.aspectRatio(1f).padding(2.dp)
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f)) {
+                Text("Zurück")
+            }
+            Button(onClick = onNew, modifier = Modifier.weight(1f)) {
+                Text("Neue Auswahl")
+            }
+        }
+    }
+}
