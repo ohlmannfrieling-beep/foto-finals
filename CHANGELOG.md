@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- Swipe-Erkennung neu aufgebaut: ein Finger entscheidet, zwei Finger zoomen/verschieben
+- sichtbares Feedback während des Links-/Rechts-Wischens
+- automatische Serienerkennung nach Aufnahmezeit und lokalem Bild-Fingerprint
+- eigener Serienvergleich vor Runde 1
+- pro Serie können ein oder mehrere Fotos behalten werden
+- falsch erkannte Serien können aufgelöst werden, ohne Fotos zu verlieren
+- Serienerkennung kann komplett übersprungen werden
+- Serienauswahl und Fortschritt werden lokal gespeichert
+- Android versionCode auf 3 erhöht
+
 ## 0.2.0
 
 - Photo Picker startet standardmäßig im Albums-Tab

@@ -12,11 +12,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -30,6 +32,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -59,7 +62,11 @@ data class ProjectState(
     val kept: List<String>,
     val index: Int,
     val round: Int,
-    val screen: String
+    val screen: String,
+    val seriesGroups: List<List<String>> = emptyList(),
+    val seriesSingles: List<String> = emptyList(),
+    val seriesKept: List<String> = emptyList(),
+    val seriesIndex: Int = 0
 )
 
 class ProjectStore(private val activity: ComponentActivity) {
@@ -76,6 +83,16 @@ class ProjectStore(private val activity: ComponentActivity) {
         o.put("index", s.index)
         o.put("round", s.round)
         o.put("screen", s.screen)
+        o.put("seriesSingles", JSONArray(s.seriesSingles))
+        o.put("seriesKept", JSONArray(s.seriesKept))
+        o.put("seriesIndex", s.seriesIndex)
+
+        val groups = JSONArray()
+        s.seriesGroups.forEach { group ->
+            groups.put(JSONArray(group))
+        }
+        o.put("seriesGroups", groups)
+
         prefs.edit().putString("project", o.toString()).apply()
     }
 
@@ -83,16 +100,31 @@ class ProjectStore(private val activity: ComponentActivity) {
         val raw = prefs.getString("project", null) ?: return null
         return runCatching {
             val o = JSONObject(raw)
-            fun arr(name: String) = o.getJSONArray(name).let { a ->
-                List(a.length()) { i -> a.getString(i) }
+
+            fun arr(name: String): List<String> {
+                val a = o.optJSONArray(name) ?: return emptyList()
+                return List(a.length()) { i -> a.getString(i) }
             }
+
+            fun nestedArr(name: String): List<List<String>> {
+                val outer = o.optJSONArray(name) ?: return emptyList()
+                return List(outer.length()) { groupIndex ->
+                    val group = outer.optJSONArray(groupIndex) ?: JSONArray()
+                    List(group.length()) { i -> group.getString(i) }
+                }
+            }
+
             ProjectState(
                 all = arr("all"),
                 currentRound = arr("currentRound"),
                 kept = arr("kept"),
-                index = o.getInt("index"),
-                round = o.getInt("round"),
-                screen = o.getString("screen")
+                index = o.optInt("index", 0),
+                round = o.optInt("round", 1),
+                screen = o.optString("screen", "home"),
+                seriesGroups = nestedArr("seriesGroups"),
+                seriesSingles = arr("seriesSingles"),
+                seriesKept = arr("seriesKept"),
+                seriesIndex = o.optInt("seriesIndex", 0)
             )
         }.getOrNull()
     }
@@ -124,6 +156,39 @@ fun PhotoFinalsApp(store: ProjectStore) {
         store.save(newState)
     }
 
+    fun resetToHome() {
+        store.clear()
+        state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
+    }
+
+    fun finishSeriesGroup(selected: List<String>) {
+        val newSeriesKept = (state.seriesKept + selected).distinct()
+        val nextIndex = state.seriesIndex + 1
+
+        if (nextIndex >= state.seriesGroups.size) {
+            val allowed = (state.seriesSingles + newSeriesKept).toSet()
+            val pool = state.all.filter { it in allowed }
+            update(
+                state.copy(
+                    currentRound = pool,
+                    kept = emptyList(),
+                    index = 0,
+                    round = 1,
+                    screen = "selectionReview",
+                    seriesKept = newSeriesKept,
+                    seriesIndex = nextIndex
+                )
+            )
+        } else {
+            update(
+                state.copy(
+                    seriesKept = newSeriesKept,
+                    seriesIndex = nextIndex
+                )
+            )
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
@@ -137,7 +202,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
                     kept = emptyList(),
                     index = 0,
                     round = 1,
-                    screen = "selectionReview"
+                    screen = "seriesLoading"
                 )
             )
         }
@@ -174,16 +239,78 @@ fun PhotoFinalsApp(store: ProjectStore) {
             }
         )
 
-        "selectionReview" -> SelectionReviewScreen(
+        "seriesLoading" -> SeriesLoadingScreen(
             uris = state.all,
+            onComplete = { analysis ->
+                if (analysis.groups.isEmpty()) {
+                    update(
+                        state.copy(
+                            currentRound = state.all,
+                            screen = "selectionReview",
+                            seriesGroups = emptyList(),
+                            seriesSingles = state.all,
+                            seriesKept = emptyList(),
+                            seriesIndex = 0
+                        )
+                    )
+                } else {
+                    update(
+                        state.copy(
+                            seriesGroups = analysis.groups,
+                            seriesSingles = analysis.singles,
+                            seriesKept = emptyList(),
+                            seriesIndex = 0,
+                            screen = "seriesReview"
+                        )
+                    )
+                }
+            }
+        )
+
+        "seriesReview" -> {
+            val group = state.seriesGroups.getOrNull(state.seriesIndex)
+            if (group == null) {
+                LaunchedEffect(state.seriesIndex) {
+                    val allowed = (state.seriesSingles + state.seriesKept).toSet()
+                    update(
+                        state.copy(
+                            currentRound = state.all.filter { it in allowed },
+                            screen = "selectionReview"
+                        )
+                    )
+                }
+            } else {
+                SeriesReviewScreen(
+                    group = group,
+                    groupIndex = state.seriesIndex,
+                    groupCount = state.seriesGroups.size,
+                    originalCount = state.all.size,
+                    onKeepSelected = ::finishSeriesGroup,
+                    onKeepAll = { finishSeriesGroup(group) },
+                    onSkipAllSeries = {
+                        update(
+                            state.copy(
+                                currentRound = state.all,
+                                kept = emptyList(),
+                                index = 0,
+                                round = 1,
+                                screen = "selectionReview"
+                            )
+                        )
+                    }
+                )
+            }
+        }
+
+        "selectionReview" -> SelectionReviewScreen(
+            uris = state.currentRound,
+            originalCount = state.all.size,
+            seriesCount = state.seriesGroups.size,
             onStart = { update(state.copy(screen = "round")) },
             onChooseAgain = {
                 launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
             },
-            onCancel = {
-                store.clear()
-                state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
-            }
+            onCancel = ::resetToHome
         )
 
         "round" -> RoundScreen(
@@ -238,8 +365,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
             onAnother = {
                 if (state.kept.isNotEmpty()) {
                     update(
-                        ProjectState(
-                            all = state.all,
+                        state.copy(
                             currentRound = state.kept,
                             kept = emptyList(),
                             index = 0,
@@ -258,16 +384,10 @@ fun PhotoFinalsApp(store: ProjectStore) {
             originalCount = state.all.size,
             versionName = BuildConfig.VERSION_NAME,
             onBack = { update(state.copy(screen = "roundEnd")) },
-            onNew = {
-                store.clear()
-                state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
-            }
+            onNew = ::resetToHome
         )
 
-        else -> {
-            store.clear()
-            state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
-        }
+        else -> resetToHome()
     }
 }
 
@@ -288,7 +408,7 @@ fun HomeScreen(
             Text("Foto Finals", style = MaterialTheme.typography.headlineLarge)
             Spacer(Modifier.height(12.dp))
             Text(
-                "Fotos Runde für Runde auf deine Favoriten reduzieren.",
+                "Serien vergleichen und Fotos Runde für Runde auf deine Favoriten reduzieren.",
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(32.dp))
@@ -298,7 +418,7 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Öffnet direkt die Albumansicht. Bei Google-Fotos-Cloud-Alben ist weiterhin Mehrfachauswahl nötig.",
+                "Nach der Auswahl sucht Foto Finals automatisch nach ähnlichen Aufnahmeserien.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
@@ -322,8 +442,146 @@ fun HomeScreen(
 }
 
 @Composable
+fun SeriesLoadingScreen(
+    uris: List<String>,
+    onComplete: (SeriesAnalysis) -> Unit
+) {
+    val context = LocalContext.current
+    var failed by remember(uris) { mutableStateOf(false) }
+
+    LaunchedEffect(uris) {
+        runCatching { detectPhotoSeries(context, uris) }
+            .onSuccess(onComplete)
+            .onFailure {
+                failed = true
+                onComplete(SeriesAnalysis(groups = emptyList(), singles = uris))
+            }
+    }
+
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(20.dp))
+            Text(
+                if (failed) "Serienanalyse wird übersprungen."
+                else "Ähnliche Aufnahmeserien werden erkannt …",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Die Analyse läuft auf dem Gerät und verändert keine Originalfotos.",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+fun SeriesReviewScreen(
+    group: List<String>,
+    groupIndex: Int,
+    groupCount: Int,
+    originalCount: Int,
+    onKeepSelected: (List<String>) -> Unit,
+    onKeepAll: () -> Unit,
+    onSkipAllSeries: () -> Unit
+) {
+    var selected by remember(groupIndex) { mutableStateOf<Set<String>>(emptySet()) }
+
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Serie ${groupIndex + 1} von $groupCount",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Spacer(Modifier.height(4.dp))
+            Text("${group.size} ähnliche Fotos · insgesamt $originalCount importiert")
+            Text(
+                "Markiere das beste Foto – oder mehrere, wenn du dich noch nicht entscheiden willst.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(6.dp)
+        ) {
+            items(group) { uri ->
+                val isSelected = uri in selected
+                Card(
+                    onClick = {
+                        selected =
+                            if (isSelected) selected - uri else selected + uri
+                    },
+                    border = if (isSelected) {
+                        BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.padding(4.dp)
+                ) {
+                    Column {
+                        AsyncImage(
+                            model = uri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(1f)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        )
+                        Text(
+                            if (isSelected) "✓ Behalten" else "Antippen zum Behalten",
+                            modifier = Modifier.padding(8.dp),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Button(
+                onClick = { onKeepSelected(selected.toList()) },
+                enabled = selected.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    if (selected.size == 1) "Ausgewähltes Foto behalten"
+                    else "${selected.size} ausgewählte Fotos behalten"
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onKeepAll,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Keine Serie – alle behalten")
+            }
+
+            TextButton(
+                onClick = onSkipAllSeries,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Serienerkennung komplett überspringen")
+            }
+        }
+    }
+}
+
+@Composable
 fun SelectionReviewScreen(
     uris: List<String>,
+    originalCount: Int,
+    seriesCount: Int,
     onStart: () -> Unit,
     onChooseAgain: () -> Unit,
     onCancel: () -> Unit
@@ -333,6 +591,12 @@ fun SelectionReviewScreen(
             Text("Auswahl vorbereitet", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(6.dp))
             Text("${uris.size} Fotos werden in Runde 1 geprüft.")
+            if (seriesCount > 0 && uris.size < originalCount) {
+                Text(
+                    "$seriesCount Serien wurden vorab verglichen; ursprünglich waren es $originalCount Fotos.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
         LazyVerticalGrid(
@@ -376,17 +640,7 @@ fun RoundScreen(
     var scale by remember(uri) { mutableFloatStateOf(1f) }
     var offsetX by remember(uri) { mutableFloatStateOf(0f) }
     var offsetY by remember(uri) { mutableFloatStateOf(0f) }
-
-    val transformState = rememberTransformableState { zoom, pan, _ ->
-        scale = (scale * zoom).coerceIn(1f, 5f)
-        if (scale > 1f) {
-            offsetX += pan.x
-            offsetY += pan.y
-        } else {
-            offsetX = 0f
-            offsetY = 0f
-        }
-    }
+    val swipeThreshold = with(LocalDensity.current) { 88.dp.toPx() }
 
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Row(
@@ -406,22 +660,55 @@ fun RoundScreen(
                 .weight(1f)
                 .fillMaxWidth()
                 .clipToBounds()
-                .pointerInput(uri, scale) {
-                    if (scale <= 1.02f) {
-                        detectDragGestures(
-                            onDragEnd = {
-                                if (abs(dragX) > 140f) {
-                                    onDecision(dragX > 0)
-                                }
-                                dragX = 0f
+                .pointerInput(uri) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var hadMultiTouch = false
+                        dragX = 0f
+
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressedCount = event.changes.count { it.pressed }
+
+                            if (pressedCount >= 2) {
+                                if (!hadMultiTouch) dragX = 0f
+                                hadMultiTouch = true
                             }
-                        ) { change, amount ->
-                            change.consume()
-                            dragX += amount.x
+
+                            if ((hadMultiTouch || scale > 1.02f) && pressedCount > 0) {
+                                val zoom = event.calculateZoom()
+                                val pan = event.calculatePan()
+
+                                scale = (scale * zoom).coerceIn(1f, 5f)
+                                if (scale > 1.02f) {
+                                    offsetX += pan.x
+                                    offsetY += pan.y
+                                } else {
+                                    scale = 1f
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                }
+
+                                event.changes.forEach { change ->
+                                    if (change.pressed) change.consume()
+                                }
+                            } else if (!hadMultiTouch && pressedCount == 1 && scale <= 1.02f) {
+                                val change = event.changes.first { it.pressed }
+                                dragX += change.position.x - change.previousPosition.x
+                                change.consume()
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        if (
+                            !hadMultiTouch &&
+                            scale <= 1.02f &&
+                            abs(dragX) >= swipeThreshold
+                        ) {
+                            onDecision(dragX > 0f)
                         }
+                        dragX = 0f
                     }
-                }
-                .transformable(transformState),
+                },
             contentAlignment = Alignment.Center
         ) {
             AsyncImage(
@@ -434,8 +721,28 @@ fun RoundScreen(
                     scaleX = scale
                     scaleY = scale
                     rotationZ = if (scale <= 1.02f) dragX / 80f else 0f
+                    alpha = if (scale <= 1.02f) {
+                        (1f - (abs(dragX) / 1400f)).coerceIn(0.72f, 1f)
+                    } else {
+                        1f
+                    }
                 }
             )
+
+            if (scale <= 1.02f && abs(dragX) > 24f) {
+                Surface(
+                    tonalElevation = 4.dp,
+                    modifier = Modifier
+                        .align(if (dragX > 0) Alignment.TopStart else Alignment.TopEnd)
+                        .padding(20.dp)
+                ) {
+                    Text(
+                        if (dragX > 0) "BEHALTEN →" else "← RAUS",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+            }
         }
 
         Row(
