@@ -54,7 +54,7 @@ data class ProjectState(
 )
 
 class ProjectStore(private val activity: ComponentActivity) {
-    private val prefs = activity.getSharedPreferences("photo_finals", MODE_PRIVATE)
+    private val prefs = activity.getSharedPreferences("photo_finals", android.content.Context.MODE_PRIVATE)
 
     fun save(s: ProjectState) {
         val o = JSONObject()
