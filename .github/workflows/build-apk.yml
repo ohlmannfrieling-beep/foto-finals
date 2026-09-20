@@ -36,7 +36,7 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk "FotoFinals-v${{ steps.version.outputs.version }}-debug.apk"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: FotoFinals-v${{ steps.version.outputs.version }}-debug-apk
           path: FotoFinals-v${{ steps.version.outputs.version }}-debug.apk
