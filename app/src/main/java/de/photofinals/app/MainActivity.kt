@@ -1,14 +1,14 @@
 package de.photofinals.app
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -85,6 +85,15 @@ class ProjectStore(private val activity: ComponentActivity) {
         }.getOrNull()
     }
 
+    fun persistReadPermission(uri: Uri) {
+        runCatching {
+            activity.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+    }
+
     fun clear() = prefs.edit().remove("project").apply()
 }
 
@@ -107,6 +116,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNotEmpty()) {
+            uris.forEach(store::persistReadPermission)
             val strings = uris.map(Uri::toString)
             update(ProjectState(strings, strings, emptyList(), 0, 1, "round"))
         }
@@ -135,15 +145,32 @@ fun PhotoFinalsApp(store: ProjectStore) {
                 if (state.index > 0) {
                     val previousIndex = state.index - 1
                     val previousUri = state.currentRound[previousIndex]
+                    val keptAfterUndo =
+                        if (state.kept.lastOrNull() == previousUri) state.kept.dropLast(1)
+                        else state.kept
                     update(state.copy(
                         index = previousIndex,
-                        kept = state.kept.filterNot { it == previousUri }
+                        kept = keptAfterUndo
                     ))
                 }
             }
         )
         "roundEnd" -> RoundEndScreen(
             state = state,
+            onUndo = {
+                val previousIndex = (state.index - 1).coerceAtLeast(0)
+                val previousUri = state.currentRound.getOrNull(previousIndex)
+                if (previousUri != null) {
+                    val keptAfterUndo =
+                        if (state.kept.lastOrNull() == previousUri) state.kept.dropLast(1)
+                        else state.kept
+                    update(state.copy(
+                        index = previousIndex,
+                        kept = keptAfterUndo,
+                        screen = "round"
+                    ))
+                }
+            },
             onAnother = {
                 if (state.kept.isNotEmpty()) {
                     update(ProjectState(
@@ -277,6 +304,7 @@ fun RoundScreen(state: ProjectState, onDecision: (Boolean) -> Unit, onUndo: () -
 @Composable
 fun RoundEndScreen(
     state: ProjectState,
+    onUndo: () -> Unit,
     onAnother: () -> Unit,
     onFinish: () -> Unit
 ) {
@@ -291,6 +319,11 @@ fun RoundEndScreen(
             Text("${state.currentRound.size} Fotos angesehen")
             Text("${state.kept.size} Fotos ausgewählt", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(32.dp))
+            OutlinedButton(
+                onClick = onUndo,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Letzte Entscheidung zurücknehmen") }
+            Spacer(Modifier.height(12.dp))
             Button(
                 onClick = onFinish,
                 enabled = state.kept.isNotEmpty(),
