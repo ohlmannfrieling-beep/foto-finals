@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Serienvergleich: Fotos lassen sich antippen und in einer Vollbildansicht per Zwei-Finger-Geste bis 6× zoomen und verschieben
+- Swipe in der Rundenauswahl bewegt das Foto nur noch horizontal, ohne Dreh- oder Transparenzeffekt
+- Google-Fotos-Auswahl wieder direkt über Google Fotos geöffnet, damit dortige Alben erreichbar sind; bei fehlender App Fallback auf den Android Photo Picker
+- Android versionCode auf 4 erhöht
+
 ## 0.3.0
 
 - Swipe-Erkennung neu aufgebaut: ein Finger entscheidet, zwei Finger zoomen/verschieben
