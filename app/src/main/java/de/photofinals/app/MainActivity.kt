@@ -34,6 +34,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import org.json.JSONArray
@@ -189,22 +190,40 @@ fun PhotoFinalsApp(store: ProjectStore) {
         }
     }
 
+    fun acceptPickedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        uris.forEach(store::persistReadPermission)
+        val strings = uris.map(Uri::toString)
+        update(
+            ProjectState(
+                all = strings,
+                currentRound = strings,
+                kept = emptyList(),
+                index = 0,
+                round = 1,
+                screen = "seriesLoading"
+            )
+        )
+    }
+
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            uris.forEach(store::persistReadPermission)
-            val strings = uris.map(Uri::toString)
-            update(
-                ProjectState(
-                    all = strings,
-                    currentRound = strings,
-                    kept = emptyList(),
-                    index = 0,
-                    round = 1,
-                    screen = "seriesLoading"
-                )
-            )
+    ) { uris -> acceptPickedUris(uris) }
+
+    val googlePhotosPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val data = result.data
+            val uris = buildList {
+                data?.clipData?.let { clips ->
+                    for (i in 0 until clips.itemCount) {
+                        clips.getItemAt(i).uri?.let(::add)
+                    }
+                }
+                if (isEmpty()) data?.data?.let(::add)
+            }.distinct()
+            acceptPickedUris(uris)
         }
     }
 
@@ -216,13 +235,24 @@ fun PhotoFinalsApp(store: ProjectStore) {
         picker.launch(request)
     }
 
+    fun launchGooglePhotos() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            setPackage(GOOGLE_PHOTOS_PACKAGE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching { googlePhotosPicker.launch(intent) }
+            .onFailure {
+                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
+            }
+    }
+
     when (state.screen) {
         "home" -> HomeScreen(
             hasSaved = state.all.isNotEmpty(),
             versionName = BuildConfig.VERSION_NAME,
-            onPickAlbums = {
-                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
-            },
+            onPickAlbums = { launchGooglePhotos() },
             onPickPhotos = {
                 launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.PhotosTab)
             },
@@ -307,9 +337,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
             originalCount = state.all.size,
             seriesCount = state.seriesGroups.size,
             onStart = { update(state.copy(screen = "round")) },
-            onChooseAgain = {
-                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
-            },
+            onChooseAgain = { launchGooglePhotos() },
             onCancel = ::resetToHome
         )
 
@@ -414,7 +442,7 @@ fun HomeScreen(
             Spacer(Modifier.height(32.dp))
 
             Button(onClick = onPickAlbums, modifier = Modifier.fillMaxWidth()) {
-                Text("Album / Fotos auswählen")
+                Text("Google-Fotos-Album / Fotos auswählen")
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -493,6 +521,14 @@ fun SeriesReviewScreen(
     onSkipAllSeries: () -> Unit
 ) {
     var selected by remember(groupIndex) { mutableStateOf<Set<String>>(emptySet()) }
+    var zoomUri by remember(groupIndex) { mutableStateOf<String?>(null) }
+
+    zoomUri?.let { uri ->
+        ZoomPhotoDialog(
+            uri = uri,
+            onDismiss = { zoomUri = null }
+        )
+    }
 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(16.dp)) {
@@ -516,10 +552,6 @@ fun SeriesReviewScreen(
             items(group) { uri ->
                 val isSelected = uri in selected
                 Card(
-                    onClick = {
-                        selected =
-                            if (isSelected) selected - uri else selected + uri
-                    },
                     border = if (isSelected) {
                         BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
                     } else {
@@ -530,18 +562,23 @@ fun SeriesReviewScreen(
                     Column {
                         AsyncImage(
                             model = uri,
-                            contentDescription = null,
+                            contentDescription = "Foto vergrößern",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .aspectRatio(1f)
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { zoomUri = uri }
                         )
-                        Text(
-                            if (isSelected) "✓ Behalten" else "Antippen zum Behalten",
-                            modifier = Modifier.padding(8.dp),
-                            style = MaterialTheme.typography.labelMedium
-                        )
+                        TextButton(
+                            onClick = {
+                                selected =
+                                    if (isSelected) selected - uri else selected + uri
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isSelected) "✓ Behalten" else "Zum Behalten markieren")
+                        }
                     }
                 }
             }
@@ -572,6 +609,77 @@ fun SeriesReviewScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Serienerkennung komplett überspringen")
+            }
+        }
+    }
+}
+
+@Composable
+fun ZoomPhotoDialog(
+    uri: String,
+    onDismiss: () -> Unit
+) {
+    var scale by remember(uri) { mutableFloatStateOf(1f) }
+    var offsetX by remember(uri) { mutableFloatStateOf(0f) }
+    var offsetY by remember(uri) { mutableFloatStateOf(0f) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(8.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Schließen") }
+                }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clipToBounds()
+                        .pointerInput(uri) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val zoom = event.calculateZoom()
+                                    val pan = event.calculatePan()
+                                    scale = (scale * zoom).coerceIn(1f, 6f)
+                                    if (scale > 1.02f) {
+                                        offsetX += pan.x
+                                        offsetY += pan.y
+                                    } else {
+                                        scale = 1f
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                    }
+                                    event.changes.forEach { if (it.pressed) it.consume() }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = uri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offsetX
+                            translationY = offsetY
+                        }
+                    )
+                }
+                Text(
+                    "Mit zwei Fingern zoomen und den Bildausschnitt verschieben.",
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }
@@ -720,12 +828,8 @@ fun RoundScreen(
                     translationY = offsetY
                     scaleX = scale
                     scaleY = scale
-                    rotationZ = if (scale <= 1.02f) dragX / 80f else 0f
-                    alpha = if (scale <= 1.02f) {
-                        (1f - (abs(dragX) / 1400f)).coerceIn(0.72f, 1f)
-                    } else {
-                        1f
-                    }
+                    rotationZ = 0f
+                    alpha = 1f
                 }
             )
 
