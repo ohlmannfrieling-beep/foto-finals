@@ -58,6 +58,17 @@ internal fun clearPhotoAnalysisCache() {
     PhotoFeatureCache.clear()
 }
 
+internal fun getOrAnalyzePhotoFeatureBlocking(
+    context: Context,
+    uriString: String
+): PhotoFeature {
+    PhotoFeatureCache.get(uriString)?.let { return it }
+
+    return analyzePhotoFeature(context, uriString).also {
+        PhotoFeatureCache.put(it)
+    }
+}
+
 internal suspend fun analyzePhotoFeatures(
     context: Context,
     uriStrings: List<String>
@@ -69,9 +80,7 @@ internal suspend fun analyzePhotoFeatures(
     uriStrings.map { value ->
         async(Dispatchers.IO) {
             PhotoFeatureCache.get(value) ?: semaphore.withPermit {
-                PhotoFeatureCache.get(value) ?: analyzePhotoFeature(context, value).also {
-                    PhotoFeatureCache.put(it)
-                }
+                getOrAnalyzePhotoFeatureBlocking(context, value)
             }
         }
     }.awaitAll()
