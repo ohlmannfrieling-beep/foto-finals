@@ -12,8 +12,8 @@ android {
         applicationId = "de.photofinals.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
     compileOptions {
@@ -44,5 +44,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
