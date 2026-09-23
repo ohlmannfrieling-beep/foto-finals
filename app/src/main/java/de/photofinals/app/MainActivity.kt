@@ -419,7 +419,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
                     val allowed = (state.seriesSingles + state.seriesKept).toSet()
                     update(
                         state.copy(
-                            currentRound = state.all.filter { it in allowed },
+                            currentRound = state.currentRound.filter { it in allowed },
                             screen = "selectionReview"
                         )
                     )
