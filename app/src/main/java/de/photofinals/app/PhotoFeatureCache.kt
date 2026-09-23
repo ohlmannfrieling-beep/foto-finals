@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class PhotoFeature(
     val uri: String,
@@ -71,17 +72,29 @@ internal fun getOrAnalyzePhotoFeatureBlocking(
 
 internal suspend fun analyzePhotoFeatures(
     context: Context,
-    uriStrings: List<String>
+    uriStrings: List<String>,
+    onProgress: (suspend (done: Int, total: Int) -> Unit)? = null
 ): List<PhotoFeature> = coroutineScope {
     if (uriStrings.isEmpty()) return@coroutineScope emptyList()
 
     val semaphore = Semaphore(4)
+    val completed = AtomicInteger(0)
+    val total = uriStrings.size
 
     uriStrings.map { value ->
         async(Dispatchers.IO) {
-            PhotoFeatureCache.get(value) ?: semaphore.withPermit {
+            val feature = PhotoFeatureCache.get(value) ?: semaphore.withPermit {
                 getOrAnalyzePhotoFeatureBlocking(context, value)
             }
+
+            val done = completed.incrementAndGet()
+            if (onProgress != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    onProgress(done, total)
+                }
+            }
+
+            feature
         }
     }.awaitAll()
 }
