@@ -64,6 +64,13 @@ data class ProjectState(
     val index: Int,
     val round: Int,
     val screen: String,
+    val duplicateGroups: List<List<String>> = emptyList(),
+    val duplicateSingles: List<String> = emptyList(),
+    val duplicateKept: List<String> = emptyList(),
+    val duplicateIndex: Int = 0,
+    val likelyWhatsAppUris: List<String> = emptyList(),
+    val possibleWhatsAppUris: List<String> = emptyList(),
+    val lowerQualityCopies: List<String> = emptyList(),
     val seriesGroups: List<List<String>> = emptyList(),
     val seriesSingles: List<String> = emptyList(),
     val seriesKept: List<String> = emptyList(),
@@ -84,9 +91,21 @@ class ProjectStore(private val activity: ComponentActivity) {
         o.put("index", s.index)
         o.put("round", s.round)
         o.put("screen", s.screen)
+        o.put("duplicateSingles", JSONArray(s.duplicateSingles))
+        o.put("duplicateKept", JSONArray(s.duplicateKept))
+        o.put("duplicateIndex", s.duplicateIndex)
+        o.put("likelyWhatsAppUris", JSONArray(s.likelyWhatsAppUris))
+        o.put("possibleWhatsAppUris", JSONArray(s.possibleWhatsAppUris))
+        o.put("lowerQualityCopies", JSONArray(s.lowerQualityCopies))
         o.put("seriesSingles", JSONArray(s.seriesSingles))
         o.put("seriesKept", JSONArray(s.seriesKept))
         o.put("seriesIndex", s.seriesIndex)
+
+        val duplicateGroups = JSONArray()
+        s.duplicateGroups.forEach { group ->
+            duplicateGroups.put(JSONArray(group))
+        }
+        o.put("duplicateGroups", duplicateGroups)
 
         val groups = JSONArray()
         s.seriesGroups.forEach { group ->
@@ -122,6 +141,13 @@ class ProjectStore(private val activity: ComponentActivity) {
                 index = o.optInt("index", 0),
                 round = o.optInt("round", 1),
                 screen = o.optString("screen", "home"),
+                duplicateGroups = nestedArr("duplicateGroups"),
+                duplicateSingles = arr("duplicateSingles"),
+                duplicateKept = arr("duplicateKept"),
+                duplicateIndex = o.optInt("duplicateIndex", 0),
+                likelyWhatsAppUris = arr("likelyWhatsAppUris"),
+                possibleWhatsAppUris = arr("possibleWhatsAppUris"),
+                lowerQualityCopies = arr("lowerQualityCopies"),
                 seriesGroups = nestedArr("seriesGroups"),
                 seriesSingles = arr("seriesSingles"),
                 seriesKept = arr("seriesKept"),
@@ -162,13 +188,45 @@ fun PhotoFinalsApp(store: ProjectStore) {
         state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
     }
 
+    fun finishDuplicateGroup(selected: List<String>) {
+        val newDuplicateKept = (state.duplicateKept + selected).distinct()
+        val nextIndex = state.duplicateIndex + 1
+
+        if (nextIndex >= state.duplicateGroups.size) {
+            val allowed = (state.duplicateSingles + newDuplicateKept).toSet()
+            val pool = state.all.filter { it in allowed }
+            update(
+                state.copy(
+                    currentRound = pool,
+                    kept = emptyList(),
+                    index = 0,
+                    round = 1,
+                    screen = "seriesLoading",
+                    duplicateKept = newDuplicateKept,
+                    duplicateIndex = nextIndex,
+                    seriesGroups = emptyList(),
+                    seriesSingles = emptyList(),
+                    seriesKept = emptyList(),
+                    seriesIndex = 0
+                )
+            )
+        } else {
+            update(
+                state.copy(
+                    duplicateKept = newDuplicateKept,
+                    duplicateIndex = nextIndex
+                )
+            )
+        }
+    }
+
     fun finishSeriesGroup(selected: List<String>) {
         val newSeriesKept = (state.seriesKept + selected).distinct()
         val nextIndex = state.seriesIndex + 1
 
         if (nextIndex >= state.seriesGroups.size) {
             val allowed = (state.seriesSingles + newSeriesKept).toSet()
-            val pool = state.all.filter { it in allowed }
+            val pool = state.currentRound.filter { it in allowed }
             update(
                 state.copy(
                     currentRound = pool,
@@ -201,7 +259,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
                 kept = emptyList(),
                 index = 0,
                 round = 1,
-                screen = "seriesLoading"
+                screen = "duplicateLoading"
             )
         )
     }
@@ -269,16 +327,73 @@ fun PhotoFinalsApp(store: ProjectStore) {
             }
         )
 
-        "seriesLoading" -> SeriesLoadingScreen(
+        "duplicateLoading" -> DuplicateLoadingScreen(
             uris = state.all,
+            onComplete = { analysis ->
+                update(
+                    state.copy(
+                        currentRound = state.all,
+                        duplicateGroups = analysis.groups,
+                        duplicateSingles = analysis.singles,
+                        duplicateKept = emptyList(),
+                        duplicateIndex = 0,
+                        likelyWhatsAppUris = analysis.likelyWhatsAppUris,
+                        possibleWhatsAppUris = analysis.possibleWhatsAppUris,
+                        lowerQualityCopies = analysis.lowerQualityCopies,
+                        screen = if (analysis.groups.isEmpty()) {
+                            "seriesLoading"
+                        } else {
+                            "duplicateReview"
+                        }
+                    )
+                )
+            }
+        )
+
+        "duplicateReview" -> {
+            val group = state.duplicateGroups.getOrNull(state.duplicateIndex)
+            if (group == null) {
+                LaunchedEffect(state.duplicateIndex) {
+                    val allowed = (state.duplicateSingles + state.duplicateKept).toSet()
+                    update(
+                        state.copy(
+                            currentRound = state.all.filter { it in allowed },
+                            screen = "seriesLoading"
+                        )
+                    )
+                }
+            } else {
+                DuplicateReviewScreen(
+                    group = group,
+                    groupIndex = state.duplicateIndex,
+                    groupCount = state.duplicateGroups.size,
+                    originalCount = state.all.size,
+                    onKeepSelected = ::finishDuplicateGroup,
+                    onKeepAll = { finishDuplicateGroup(group) },
+                    onSkipAllDuplicates = {
+                        update(
+                            state.copy(
+                                currentRound = state.all,
+                                duplicateKept = emptyList(),
+                                duplicateIndex = state.duplicateGroups.size,
+                                screen = "seriesLoading"
+                            )
+                        )
+                    }
+                )
+            }
+        }
+
+        "seriesLoading" -> SeriesLoadingScreen(
+            uris = state.currentRound,
             onComplete = { analysis ->
                 if (analysis.groups.isEmpty()) {
                     update(
                         state.copy(
-                            currentRound = state.all,
+                            currentRound = state.currentRound,
                             screen = "selectionReview",
                             seriesGroups = emptyList(),
-                            seriesSingles = state.all,
+                            seriesSingles = state.currentRound,
                             seriesKept = emptyList(),
                             seriesIndex = 0
                         )
@@ -320,7 +435,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
                     onSkipAllSeries = {
                         update(
                             state.copy(
-                                currentRound = state.all,
+                                currentRound = state.currentRound,
                                 kept = emptyList(),
                                 index = 0,
                                 round = 1,
@@ -336,6 +451,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
             uris = state.currentRound,
             originalCount = state.all.size,
             seriesCount = state.seriesGroups.size,
+            duplicateCount = state.duplicateGroups.size,
             onStart = { update(state.copy(screen = "round")) },
             onChooseAgain = { launchGooglePhotos() },
             onCancel = ::resetToHome
@@ -446,7 +562,7 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Nach der Auswahl sucht Foto Finals automatisch nach ähnlichen Aufnahmeserien.",
+                "Nach der Auswahl sucht Foto Finals zuerst nach Kopien/WhatsApp-Versionen und danach nach ähnlichen Aufnahmeserien.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
@@ -466,6 +582,278 @@ fun HomeScreen(
             Spacer(Modifier.height(28.dp))
             Text("Version $versionName", style = MaterialTheme.typography.labelSmall)
         }
+    }
+}
+
+@Composable
+fun DuplicateLoadingScreen(
+    uris: List<String>,
+    onComplete: (DuplicateAnalysis) -> Unit
+) {
+    val context = LocalContext.current
+    var failed by remember(uris) { mutableStateOf(false) }
+
+    LaunchedEffect(uris) {
+        runCatching { detectDuplicatePhotos(context, uris) }
+            .onSuccess(onComplete)
+            .onFailure {
+                failed = true
+                onComplete(
+                    DuplicateAnalysis(
+                        groups = emptyList(),
+                        singles = uris,
+                        likelyWhatsAppUris = emptyList(),
+                        possibleWhatsAppUris = emptyList(),
+                        lowerQualityCopies = emptyList()
+                    )
+                )
+            }
+    }
+
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(20.dp))
+            Text(
+                if (failed) "Kopienanalyse wird übersprungen."
+                else "Kopien und WhatsApp-Versionen werden erkannt …",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Die Bilder werden nur lokal verglichen. Foto Finals löscht oder verändert keine Originale.",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+fun DuplicateReviewScreen(
+    group: List<String>,
+    groupIndex: Int,
+    groupCount: Int,
+    originalCount: Int,
+    onKeepSelected: (List<String>) -> Unit,
+    onKeepAll: () -> Unit,
+    onSkipAllDuplicates: () -> Unit
+) {
+    var selected by remember(groupIndex) {
+        mutableStateOf<Set<String>>(group.firstOrNull()?.let(::setOf) ?: emptySet())
+    }
+    var zoomUri by remember(groupIndex) { mutableStateOf<String?>(null) }
+
+    zoomUri?.let { uri ->
+        ZoomPhotoDialog(
+            uri = uri,
+            onDismiss = { zoomUri = null }
+        )
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "Mögliche Kopie ${groupIndex + 1} von $groupCount",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Spacer(Modifier.height(4.dp))
+            Text("${group.size} nahezu identische Bilder · insgesamt $originalCount importiert")
+            Text(
+                "Die technisch hochwertigste Version steht zuerst. Tippe ein Bild zum Zoomen an.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(6.dp)
+        ) {
+            items(group) { uri ->
+                val isSelected = uri in selected
+                val isPreferred = uri == group.firstOrNull()
+
+                Card(
+                    border = if (isSelected) {
+                        BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.padding(4.dp)
+                ) {
+                    Column {
+                        Box {
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = "Foto vergrößern",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(1f)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { zoomUri = uri }
+                            )
+                            if (isPreferred) {
+                                Surface(
+                                    tonalElevation = 4.dp,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(6.dp)
+                                ) {
+                                    Text(
+                                        "Beste Qualität?",
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+
+                        PhotoDetailsLine(uri = uri)
+
+                        TextButton(
+                            onClick = {
+                                selected =
+                                    if (isSelected) selected - uri else selected + uri
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isSelected) "✓ Behalten" else "Mit behalten")
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Button(
+                onClick = { onKeepSelected(selected.toList()) },
+                enabled = selected.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    if (selected.size == 1) "Ausgewählte Version behalten"
+                    else "${selected.size} Versionen behalten"
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onKeepAll,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Keine Kopie – alle weitergeben")
+            }
+
+            TextButton(
+                onClick = onSkipAllDuplicates,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Kopienprüfung komplett überspringen")
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhotoDetailsLine(uri: String) {
+    val context = LocalContext.current
+    val details by produceState<PhotoDetails?>(initialValue = null, uri) {
+        value = runCatching { loadPhotoDetails(context, uri) }.getOrNull()
+    }
+
+    val text = details?.let(::formatPhotoDetails) ?: "Bilddaten werden gelesen …"
+
+    Text(
+        text = text,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.bodySmall,
+        textAlign = TextAlign.Center
+    )
+}
+
+private fun formatPhotoDetails(details: PhotoDetails): String {
+    val dimensions = if (details.width != null && details.height != null) {
+        "${details.width} × ${details.height}"
+    } else {
+        "Auflösung unbekannt"
+    }
+
+    val size = details.sizeBytes?.let(::formatBytes) ?: "Größe unbekannt"
+    val metadata = if (details.hasCameraMetadata) "Aufnahmedaten ✓" else "keine Aufnahmedaten"
+    val origin = when (details.whatsAppHint) {
+        WhatsAppHint.LIKELY -> " · WA"
+        WhatsAppHint.POSSIBLE -> " · WA?"
+        WhatsAppHint.NONE -> ""
+    }
+
+    return "$dimensions · $size · $metadata$origin"
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000L -> String.format(java.util.Locale.GERMANY, "%.1f MB", bytes / 1_000_000.0)
+    bytes >= 1_000L -> "${bytes / 1_000} KB"
+    else -> "$bytes B"
+}
+
+@Composable
+private fun PhotoOriginBadges(
+    uri: String,
+    likelyWhatsAppUris: List<String>,
+    possibleWhatsAppUris: List<String>,
+    lowerQualityCopies: List<String>,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val knownHint = when {
+        uri in likelyWhatsAppUris -> WhatsAppHint.LIKELY
+        uri in possibleWhatsAppUris -> WhatsAppHint.POSSIBLE
+        else -> null
+    }
+
+    val details by produceState<PhotoDetails?>(initialValue = null, uri, knownHint) {
+        value = if (knownHint == null) {
+            runCatching { loadPhotoDetails(context, uri) }.getOrNull()
+        } else {
+            null
+        }
+    }
+
+    val hint = knownHint ?: details?.whatsAppHint ?: WhatsAppHint.NONE
+    val lowerQuality = uri in lowerQualityCopies
+
+    if (hint == WhatsAppHint.NONE && !lowerQuality) return
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (lowerQuality) OriginBadge("Kopie ↓")
+        when (hint) {
+            WhatsAppHint.LIKELY -> OriginBadge("WA")
+            WhatsAppHint.POSSIBLE -> OriginBadge("WA?")
+            WhatsAppHint.NONE -> Unit
+        }
+    }
+}
+
+@Composable
+private fun OriginBadge(label: String) {
+    Surface(
+        tonalElevation = 4.dp,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelSmall
+        )
     }
 }
 
@@ -690,6 +1078,7 @@ fun SelectionReviewScreen(
     uris: List<String>,
     originalCount: Int,
     seriesCount: Int,
+    duplicateCount: Int,
     onStart: () -> Unit,
     onChooseAgain: () -> Unit,
     onCancel: () -> Unit
@@ -699,9 +1088,15 @@ fun SelectionReviewScreen(
             Text("Auswahl vorbereitet", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(6.dp))
             Text("${uris.size} Fotos werden in Runde 1 geprüft.")
-            if (seriesCount > 0 && uris.size < originalCount) {
+            if (duplicateCount > 0) {
                 Text(
-                    "$seriesCount Serien wurden vorab verglichen; ursprünglich waren es $originalCount Fotos.",
+                    "$duplicateCount mögliche Kopien wurden vorab geprüft.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (seriesCount > 0) {
+                Text(
+                    "$seriesCount Serien wurden anschließend verglichen; ursprünglich waren es $originalCount Fotos.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -831,6 +1226,14 @@ fun RoundScreen(
                     rotationZ = 0f
                     alpha = 1f
                 }
+            )
+
+            PhotoOriginBadges(
+                uri = uri,
+                likelyWhatsAppUris = state.likelyWhatsAppUris,
+                possibleWhatsAppUris = state.possibleWhatsAppUris,
+                lowerQualityCopies = state.lowerQualityCopies,
+                modifier = Modifier.align(Alignment.TopStart).padding(16.dp)
             )
 
             if (scale <= 1.02f && abs(dragX) > 24f) {
