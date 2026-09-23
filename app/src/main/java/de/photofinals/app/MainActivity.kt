@@ -724,9 +724,16 @@ fun DuplicateLoadingScreen(
 ) {
     val context = LocalContext.current
     var failed by remember(uris) { mutableStateOf(false) }
+    var analyzedCount by remember(uris) { mutableIntStateOf(0) }
 
     LaunchedEffect(uris) {
-        runCatching { detectDuplicatePhotos(context, uris) }
+        runCatching {
+            detectDuplicatePhotos(
+                context = context,
+                uriStrings = uris,
+                onProgress = { done, _ -> analyzedCount = done }
+            )
+        }
             .onSuccess(onComplete)
             .onFailure {
                 failed = true
@@ -757,6 +764,13 @@ fun DuplicateLoadingScreen(
                 textAlign = TextAlign.Center
             )
             Spacer(Modifier.height(8.dp))
+            if (!failed && uris.isNotEmpty()) {
+                Text(
+                    "$analyzedCount / ${uris.size} Fotos vorbereitet",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             Text(
                 "Fingerprints werden begrenzt parallel berechnet und für die anschließende Serienprüfung wiederverwendet.",
                 style = MaterialTheme.typography.bodySmall,
