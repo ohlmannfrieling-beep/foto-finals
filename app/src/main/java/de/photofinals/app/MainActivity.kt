@@ -177,6 +177,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
             )
         )
     }
+    var appendImport by remember { mutableStateOf(false) }
 
     fun update(newState: ProjectState) {
         state = newState
@@ -184,6 +185,7 @@ fun PhotoFinalsApp(store: ProjectStore) {
     }
 
     fun resetToHome() {
+        clearPhotoAnalysisCache()
         store.clear()
         state = ProjectState(emptyList(), emptyList(), emptyList(), 0, 1, "home")
     }
@@ -249,17 +251,31 @@ fun PhotoFinalsApp(store: ProjectStore) {
     }
 
     fun acceptPickedUris(uris: List<Uri>) {
-        if (uris.isEmpty()) return
+        if (uris.isEmpty()) {
+            appendImport = false
+            return
+        }
+
         uris.forEach(store::persistReadPermission)
-        val strings = uris.map(Uri::toString)
+        val incoming = uris.map(Uri::toString)
+
+        val merged = if (appendImport && state.screen == "importReview") {
+            (state.all + incoming).distinct()
+        } else {
+            clearPhotoAnalysisCache()
+            incoming.distinct()
+        }
+
+        appendImport = false
+
         update(
             ProjectState(
-                all = strings,
-                currentRound = strings,
+                all = merged,
+                currentRound = merged,
                 kept = emptyList(),
                 index = 0,
                 round = 1,
-                screen = "duplicateLoading"
+                screen = "importReview"
             )
         )
     }
@@ -282,10 +298,16 @@ fun PhotoFinalsApp(store: ProjectStore) {
                 if (isEmpty()) data?.data?.let(::add)
             }.distinct()
             acceptPickedUris(uris)
+        } else {
+            appendImport = false
         }
     }
 
-    fun launchPicker(defaultTab: ActivityResultContracts.PickVisualMedia.DefaultTab) {
+    fun launchPicker(
+        defaultTab: ActivityResultContracts.PickVisualMedia.DefaultTab,
+        append: Boolean = false
+    ) {
+        appendImport = append
         val request = PickVisualMediaRequest.Builder()
             .setMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly)
             .setDefaultTab(defaultTab)
@@ -293,7 +315,8 @@ fun PhotoFinalsApp(store: ProjectStore) {
         picker.launch(request)
     }
 
-    fun launchGooglePhotos() {
+    fun launchGooglePhotos(append: Boolean = false) {
+        appendImport = append
         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             type = "image/*"
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
@@ -302,7 +325,11 @@ fun PhotoFinalsApp(store: ProjectStore) {
         }
         runCatching { googlePhotosPicker.launch(intent) }
             .onFailure {
-                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
+                appendImport = append
+                launchPicker(
+                    ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab,
+                    append = append
+                )
             }
     }
 
@@ -310,10 +337,13 @@ fun PhotoFinalsApp(store: ProjectStore) {
         "home" -> HomeScreen(
             hasSaved = state.all.isNotEmpty(),
             versionName = BuildConfig.VERSION_NAME,
-            onPickAlbums = { launchGooglePhotos() },
+            onPickAlbums = {
+                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
+            },
             onPickPhotos = {
                 launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.PhotosTab)
             },
+            onPickGooglePhotos = { launchGooglePhotos() },
             onContinue = {
                 update(
                     state.copy(
@@ -325,6 +355,40 @@ fun PhotoFinalsApp(store: ProjectStore) {
                     )
                 )
             }
+        )
+
+        "importReview" -> ImportReviewScreen(
+            uris = state.all,
+            onStartAnalysis = {
+                update(
+                    state.copy(
+                        currentRound = state.all,
+                        kept = emptyList(),
+                        index = 0,
+                        round = 1,
+                        duplicateGroups = emptyList(),
+                        duplicateSingles = emptyList(),
+                        duplicateKept = emptyList(),
+                        duplicateIndex = 0,
+                        likelyWhatsAppUris = emptyList(),
+                        possibleWhatsAppUris = emptyList(),
+                        lowerQualityCopies = emptyList(),
+                        seriesGroups = emptyList(),
+                        seriesSingles = emptyList(),
+                        seriesKept = emptyList(),
+                        seriesIndex = 0,
+                        screen = "duplicateLoading"
+                    )
+                )
+            },
+            onAddMore = {
+                launchPicker(
+                    ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab,
+                    append = true
+                )
+            },
+            onAddGooglePhotos = { launchGooglePhotos(append = true) },
+            onCancel = ::resetToHome
         )
 
         "duplicateLoading" -> DuplicateLoadingScreen(
@@ -453,7 +517,9 @@ fun PhotoFinalsApp(store: ProjectStore) {
             seriesCount = state.seriesGroups.size,
             duplicateCount = state.duplicateGroups.size,
             onStart = { update(state.copy(screen = "round")) },
-            onChooseAgain = { launchGooglePhotos() },
+            onChooseAgain = {
+                launchPicker(ActivityResultContracts.PickVisualMedia.DefaultTab.AlbumsTab)
+            },
             onCancel = ::resetToHome
         )
 
@@ -541,6 +607,7 @@ fun HomeScreen(
     versionName: String,
     onPickAlbums: () -> Unit,
     onPickPhotos: () -> Unit,
+    onPickGooglePhotos: () -> Unit,
     onContinue: () -> Unit
 ) {
     Surface(Modifier.fillMaxSize()) {
@@ -558,11 +625,11 @@ fun HomeScreen(
             Spacer(Modifier.height(32.dp))
 
             Button(onClick = onPickAlbums, modifier = Modifier.fillMaxWidth()) {
-                Text("Google-Fotos-Album / Fotos auswählen")
+                Text("Album / Fotos auswählen")
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Nach der Auswahl sucht Foto Finals zuerst nach Kopien/WhatsApp-Versionen und danach nach ähnlichen Aufnahmeserien.",
+                "Für große Auswahlen nutzt Foto Finals die robuste Android-Bildauswahl. Danach kannst du weitere Blöcke ergänzen, bevor die Analyse startet.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
@@ -570,6 +637,11 @@ fun HomeScreen(
             Spacer(Modifier.height(14.dp))
             OutlinedButton(onClick = onPickPhotos, modifier = Modifier.fillMaxWidth()) {
                 Text("Fotoübersicht öffnen")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onPickGooglePhotos, modifier = Modifier.fillMaxWidth()) {
+                Text("Google Fotos direkt öffnen")
             }
 
             if (hasSaved) {
@@ -581,6 +653,66 @@ fun HomeScreen(
 
             Spacer(Modifier.height(28.dp))
             Text("Version $versionName", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+fun ImportReviewScreen(
+    uris: List<String>,
+    onStartAnalysis: () -> Unit,
+    onAddMore: () -> Unit,
+    onAddGooglePhotos: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        Column(Modifier.padding(20.dp)) {
+            Text("Import vorbereitet", style = MaterialTheme.typography.headlineMedium)
+            Spacer(Modifier.height(6.dp))
+            Text("${uris.size} Fotos ausgewählt")
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Du kannst weitere Fotos in zusätzlichen Blöcken hinzufügen. Erst danach startet die rechenintensive Analyse.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(110.dp),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(6.dp)
+        ) {
+            items(uris) { uri ->
+                AsyncImage(
+                    model = uri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.aspectRatio(1f).padding(2.dp)
+                )
+            }
+        }
+
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Button(
+                onClick = onStartAnalysis,
+                enabled = uris.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Analyse mit ${uris.size} Fotos starten")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onAddMore, modifier = Modifier.fillMaxWidth()) {
+                Text("Weitere Fotos hinzufügen")
+            }
+
+            TextButton(onClick = onAddGooglePhotos, modifier = Modifier.fillMaxWidth()) {
+                Text("Weitere über Google Fotos direkt")
+            }
+
+            TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+                Text("Auswahl verwerfen")
+            }
         }
     }
 }
@@ -626,7 +758,7 @@ fun DuplicateLoadingScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "Die Bilder werden nur lokal verglichen. Foto Finals löscht oder verändert keine Originale.",
+                "Fingerprints werden begrenzt parallel berechnet und für die anschließende Serienprüfung wiederverwendet.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
@@ -890,7 +1022,7 @@ fun SeriesLoadingScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "Die Analyse läuft auf dem Gerät und verändert keine Originalfotos.",
+                "Die bereits berechneten Fingerprints werden wiederverwendet; Bilder müssen hier nicht erneut geladen werden.",
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center
             )
