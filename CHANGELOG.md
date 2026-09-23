@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- vorgeschaltete lokale Kopienprüfung vor der Serienerkennung
+- nahezu identische Bilder werden über zwei visuelle Fingerprints erkannt; ähnliche Serienbilder werden bewusst strenger abgegrenzt
+- technisch hochwertigste Version einer Kopiengruppe wird anhand Auflösung, Aufnahmedaten und Dateigröße zuerst vorgeschlagen
+- Kopienvergleich mit Zoom sowie Möglichkeit, eine oder mehrere Versionen zu behalten oder die Erkennung zu verwerfen
+- dezente Kennzeichnung beim Swipe: `WA` bei starken WhatsApp-Hinweisen, `WA?` bei unsicheren Hinweisen und `Kopie ↓` für erkannte schwächere Versionen
+- Analyse läuft lokal und verändert keine Originalfotos
+- Duplikat-/WhatsApp-Zustand wird zusammen mit dem Projekt gespeichert
+- Unit-Tests für die konservative Fingerprint-Schwelle; CI testet vor dem APK-Build
+- Android versionCode auf 5 erhöht
+
 ## 0.4.0
 
 - Serienvergleich: Fotos lassen sich antippen und in einer Vollbildansicht per Zwei-Finger-Geste bis 6× zoomen und verschieben
