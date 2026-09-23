@@ -28,8 +28,8 @@ jobs:
           test -n "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace --warning-mode all
+      - name: Test and build debug APK
+        run: gradle :app:testDebugUnitTest :app:assembleDebug --stacktrace --warning-mode all
 
       - name: Name APK
         shell: bash
