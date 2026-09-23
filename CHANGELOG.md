@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- robuster Import für große Bildmengen: Android Photo Picker als primärer Auswahlweg, direkter Google-Fotos-Import bleibt als Fallback erhalten
+- neue Import-Zwischenstufe: Auswahl kann in mehreren Blöcken ergänzt werden, bevor die Analyse startet
+- bestehende Auswahl wird bei zusätzlichen Blöcken dedupliziert
+- gemeinsame Bildanalyse für Kopien- und Serienerkennung: jedes Foto wird im Normalfall nur noch einmal für Fingerprints/Grunddaten geladen
+- Analyse von Cloud-Fotos mit begrenzter Parallelität statt rein sequenzieller Verarbeitung
+- Serienerkennung verwendet die bereits berechneten Fingerprints und löst keine zweite vollständige Bilddekodierung mehr aus
+- Fortschrittsanzeige während der ersten Vorabanalyse
+- Analyse-Cache wird beim Start einer neuen Auswahl gezielt geleert
+- Android versionCode auf 6 erhöht
+
 ## 0.5.0
 
 - vorgeschaltete lokale Kopienprüfung vor der Serienerkennung
