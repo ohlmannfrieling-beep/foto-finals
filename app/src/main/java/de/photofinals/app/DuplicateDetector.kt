@@ -59,7 +59,8 @@ internal fun isProbableDuplicateFingerprint(
 
 suspend fun detectDuplicatePhotos(
     context: Context,
-    uriStrings: List<String>
+    uriStrings: List<String>,
+    onProgress: (suspend (done: Int, total: Int) -> Unit)? = null
 ): DuplicateAnalysis = withContext(Dispatchers.Default) {
     if (uriStrings.isEmpty()) {
         return@withContext DuplicateAnalysis(
@@ -71,8 +72,11 @@ suspend fun detectDuplicatePhotos(
         )
     }
 
-    val features = analyzePhotoFeatures(context, uriStrings)
-        .mapIndexed { index, feature -> IndexedFeature(feature, index) }
+    val features = analyzePhotoFeatures(
+        context = context,
+        uriStrings = uriStrings,
+        onProgress = onProgress
+    ).mapIndexed { index, feature -> IndexedFeature(feature, index) }
 
     if (features.size < 2) {
         val likely = features
